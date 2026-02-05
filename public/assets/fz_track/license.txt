@@ -1,0 +1,11 @@
+Model Information:
+* title:	FZ Track
+* source:	https://sketchfab.com/3d-models/fz-track-936a931584014bbcba3b1c425fd5e8e5
+* author:	FZ Studio (https://sketchfab.com/FZStudio)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "FZ Track" (https://sketchfab.com/3d-models/fz-track-936a931584014bbcba3b1c425fd5e8e5) by FZ Studio (https://sketchfab.com/FZStudio) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
