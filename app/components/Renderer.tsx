@@ -1,3 +1,4 @@
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import { useEffect } from "react";
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
@@ -40,7 +41,7 @@ function App() {
     test.scene.add(axesHelper);
 
     const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
-    //const cannonDebugger = new CannonDebugger(test.scene, world);
+    const cannonDebugger = new CannonDebugger(test.scene, world);
 
     // Create Track and Train
     createTrackSegment(test.scene, world, 0, 0, 0, 1000);
@@ -48,20 +49,53 @@ function App() {
     // Create Multiple Train Carts
     // ============
     const carts = [];
-    const numberOfCarts = 10;
-    const pointslength = numberOfCarts * 8;
-    const spacing = 20; // Ensure they don't overlap on spawn
+    const numberOfCarts = 6;
+    const pointslength = 80;
+    const spacing = 30; // Ensure they don't overlap on spawn
 
-    for (let i = 0; i < numberOfCarts; i++) {
-      // Spawn each cart further back along the X axis
-      const spawnX = i * -spacing;
-      const newCart = createTrainCompartment(
-        test.scene,
-        world,
-        new CANNON.Vec3(spawnX, 5, 0),
-      );
-      carts.push(newCart);
-    }
+    const loader = new GLTFLoader();
+
+    Promise.all([
+      loader.loadAsync("/assets/train/chassis1.glb"),
+      loader.loadAsync("/assets/train/wheel1.glb"),
+    ]).then(([chassisGltf, wheelGltf]) => {
+      const chassisModel = chassisGltf.scene;
+      chassisModel.scale.set(50, 50, 50); // Scale up by 50 times
+
+      const wheelModel = wheelGltf.scene;
+      wheelModel.scale.set(50, 50, 50); // Scale up by 50 times
+
+      for (let i = 0; i < numberOfCarts; i++) {
+        const spawnX = i * -spacing;
+        const newCart = createTrainCompartment(
+          test.scene,
+          world,
+          new CANNON.Vec3(spawnX, 5, 0),
+          chassisModel,
+          wheelModel,
+        );
+        carts.push(newCart);
+      }
+
+      // Create joints between carts
+      for (let i = 0; i < carts.length - 1; i++) {
+        const leader = carts[i].chassisBody;
+        const follower = carts[i + 1].chassisBody;
+
+        // The trainLength is 26, so the edge is at 13.
+        // We add a tiny bit of extra space (0.5) to prevent collisions.
+        const pivotOffset = 13.5;
+
+        const joint = new CANNON.PointToPointConstraint(
+          leader,
+          new CANNON.Vec3(-pivotOffset, 0, 0), // Back of leader (Negative X)
+          follower,
+          new CANNON.Vec3(pivotOffset, 0, 0), // Front of follower (Positive X)
+        );
+
+        world.addConstraint(joint);
+      }
+    });
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -80,28 +114,10 @@ function App() {
       inspectorSphereGeo,
       inspectorSphereMat,
     );
-    inspectorSphere.renderOrder = 999; // Force it to draw on top of everything
+    inspectorSphere.renderOrder = 0; // Force it to draw on top of everything
     inspectorSphere.visible = false;
     test.scene.add(inspectorSphere);
     inspectorSphere.frustumCulled = false;
-
-    for (let i = 0; i < carts.length - 1; i++) {
-      const leader = carts[i].chassisBody;
-      const follower = carts[i + 1].chassisBody;
-
-      // The trainLength is 16, so the edge is at 8.
-      // We add a tiny bit of extra space (0.5) to prevent collisions.
-      const pivotOffset = 8.5;
-
-      const joint = new CANNON.PointToPointConstraint(
-        leader,
-        new CANNON.Vec3(-pivotOffset, 0, 0), // Back of leader (Negative X)
-        follower,
-        new CANNON.Vec3(pivotOffset, 0, 0), // Front of follower (Positive X)
-      );
-
-      world.addConstraint(joint);
-    }
 
     window.addEventListener("pointerdown", (event) => {
       mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
@@ -123,7 +139,7 @@ function App() {
     });
 
     // Input Handling
-    const maxspeed = numberOfCarts * 30;
+    const maxspeed = 900;
     const handleKey = (e: KeyboardEvent, isDown: boolean) => {
       const force = isDown ? maxspeed : 0;
       if (e.key === "w" || e.key === "ArrowUp") {
@@ -162,7 +178,7 @@ function App() {
     const animate = () => {
       frameCount++;
       world.fixedStep();
-      //cannonDebugger.update();
+      cannonDebugger.update();
       carts.forEach((cart) => cart.update());
       const points = [];
       // Update Contacts

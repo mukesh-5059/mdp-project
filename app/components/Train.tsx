@@ -6,9 +6,10 @@ export const createTrainCompartment = (
   scene: THREE.Scene,
   world: CANNON.World,
   spawnPos: CANNON.Vec3,
-  //visualParts: { chassis: THREE.Object3D; wheels: THREE.Object3D[] },
+  chassisModel: THREE.Group,
+  wheelModel: THREE.Group,
 ) => {
-  const trainLength = 16;
+  const trainLength = 26;
 
   // 1. Chassis Physics
   const chassisBody = new CANNON.Body({
@@ -22,7 +23,7 @@ export const createTrainCompartment = (
   // 2. Wheels Physics
   const wheelShape = new CANNON.Sphere(1);
   const wheelMaterial = new CANNON.Material("wheel");
-  const wheelXPositions = [7, 4, -4, -7];
+  const wheelXPositions = [12, 7, -7, -12];
   const axisWidth = 5;
   const wheelBodies: CANNON.Body[] = [];
 
@@ -44,27 +45,49 @@ export const createTrainCompartment = (
   vehicle.addToWorld(world);
 
   // 3. Visuals
-  const boxMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(trainLength, 1, 4),
-    new THREE.MeshNormalMaterial(),
-  );
-  scene.add(boxMesh);
+  const chassisClone = chassisModel.clone();
+  //chassisClone.rotation.y = Math.PI / 2;
+  const whiteMaterial = new THREE.MeshStandardMaterial({
+    color: "#ffffff",
+    metalness: 0.1,
+    roughness: 0.8,
+    side: THREE.DoubleSide,
+  });
+
+  chassisClone.traverse((child) => {
+    if ((child as THREE.Mesh).isMesh) {
+      const mesh = child as THREE.Mesh;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.material = whiteMaterial;
+    }
+  });
+
+  scene.add(chassisClone);
 
   const wheelMeshes = wheelBodies.map(() => {
-    const mesh = new THREE.Mesh(
-      new THREE.SphereGeometry(1),
-      new THREE.MeshNormalMaterial(),
-    );
-    scene.add(mesh);
-    return mesh;
+    const wheelClone = wheelModel.clone();
+    //wheelClone.rotation.x = Math.PI / 2;
+    wheelClone.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.material = whiteMaterial;
+      }
+    });
+    scene.add(wheelClone);
+    return wheelClone;
   });
 
   return {
     vehicle,
     chassisBody, // Export the body so we can link it later
     update: () => {
-      boxMesh.position.copy(chassisBody.position as any);
-      boxMesh.quaternion.copy(chassisBody.quaternion as any);
+      chassisClone.position
+        .copy(chassisBody.position as any)
+        .add(new THREE.Vector3(0, 1, 0));
+      chassisClone.quaternion.copy(chassisBody.quaternion as any);
       wheelBodies.forEach((body, i) => {
         wheelMeshes[i].position.copy(body.position as any);
         wheelMeshes[i].quaternion.copy(body.quaternion as any);

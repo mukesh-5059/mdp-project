@@ -44,7 +44,7 @@ export default class SceneInit {
       antialias: true,
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    // this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = true;
     document.body.appendChild(this.renderer.domElement);
 
     this.clock = new THREE.Clock();
@@ -54,12 +54,11 @@ export default class SceneInit {
 
     // ambient light which is for the whole scene
     this.ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-    this.ambientLight.castShadow = true;
     this.scene.add(this.ambientLight);
 
     // directional light - parallel sun rays
     this.directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-    // this.directionalLight.castShadow = true;
+    this.directionalLight.castShadow = true;
     this.directionalLight.position.set(0, 32, 64);
     this.scene.add(this.directionalLight);
 

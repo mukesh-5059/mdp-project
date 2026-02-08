@@ -89,7 +89,7 @@ export const createTrackSegment = (
   // Phase 2: Spread out for Sleepers
   float supportCore = uRadius ; 
 
-  for (int i = 0; i < 200; i++) {
+  for (int i = 0; i < 80; i++) {
       if (i >= uNumPoints) break;
       float dist = distance(vWorldPosition, uContactPoints[i]);
       
@@ -150,9 +150,11 @@ diffuseColor.rgb = mix(diffuseColor.rgb, heatColor, 0.8);
     };
 
     originalModel.traverse((child) => {
-      if (child.isMesh) {
-        child.material = heatmapMaterial;
-        child.name = "track_piece";
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        mesh.material = heatmapMaterial;
+        mesh.name = "track_piece";
+        mesh.receiveShadow = true;
       }
     });
 
