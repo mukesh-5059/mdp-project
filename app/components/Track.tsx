@@ -15,10 +15,14 @@ export const createTrackSegment = (
   y: number,
   z: number,
   length: number,
+  scale: number,
+  trackVisualYOffset: number, // Add visual Y offset parameter
 ) => {
   const trackMaterial = new CANNON.Material("track");
   const railHeight = 0.5;
   const trackWidth = 6;
+  
+  // ... (physics bodies remain the same)
 
   // 1. Physics: Floor
   const floorBody = new CANNON.Body({
@@ -46,100 +50,71 @@ export const createTrackSegment = (
   world.addBody(leftRail);
   world.addBody(rightRail);
 
-  // 3. Visuals
   const loader = new GLTFLoader();
 
-  // Update path to where your scene.gltf is located
-  loader.load("/assets/fz_track/scene.gltf", (gltf) => {
-    const originalModel = gltf.scene;
-    originalModel.scale.set(5, 5, 5);
-    originalModel.rotation.y = Math.PI / 2;
-    originalModel.name = "track_piece";
+  // Load both models in parallel
+  Promise.all([
+    loader.loadAsync("/assets/train/rail.glb"),
+    loader.loadAsync("/assets/train/sleepers.glb"),
+  ]).then(([railGltf, sleepersGltf]) => {
+    const railModel = railGltf.scene;
+    const sleepersModel = sleepersGltf.scene;
 
-    const heatmapMaterial = new THREE.MeshStandardMaterial({
-      color: 0x444444, // Base track color
+    // Apply the new scale
+    railModel.scale.set(scale, scale, scale);
+    sleepersModel.scale.set(scale, scale, scale);
+
+    // --- Rail Material (Detailed Heatmap) ---
+    const railMaterial = new THREE.MeshStandardMaterial({
+      color: 0x333333,
     });
-
-    // Inject custom logic into the standard material
-    heatmapMaterial.onBeforeCompile = (shader) => {
+    railMaterial.onBeforeCompile = (shader) => {
       shader.uniforms.uContactPoints = trackUniforms.uContactPoints;
       shader.uniforms.uNumPoints = trackUniforms.uNumPoints;
       shader.uniforms.uRadius = trackUniforms.uRadius;
 
-      // Define uniforms in the shader code
-      shader.fragmentShader =
-        `
+      shader.fragmentShader = `
         uniform vec3 uContactPoints[80];
         uniform int uNumPoints;
         uniform float uRadius;
         varying vec3 vWorldPosition;
       ` + shader.fragmentShader;
 
-      // Calculate heatmap brightness based on distance
       shader.fragmentShader = shader.fragmentShader.replace(
         "#include <color_fragment>",
         `
         #include <color_fragment>
         
-        float railIntensity = 0.0;
-  float supportIntensity = 0.0;
-  
-  // Phase 1: Sharp Core for Steel
-  float railCore = uRadius * 0.5; 
-  // Phase 2: Spread out for Sleepers
-  float supportCore = uRadius ; 
+        float finalIntensity = 0.0;
+        float railCore = uRadius * 0.5; 
 
-  for (int i = 0; i < 80; i++) {
-      if (i >= uNumPoints) break;
-      float dist = distance(vWorldPosition, uContactPoints[i]);
-      
-      // Calculate both distributions
-      railIntensity += 1.0 / (1.1 + pow(dist / railCore, 2.0));
-      supportIntensity += 1.0 / (1.5 + pow(dist / supportCore, 2.0));
-  }
+        for (int i = 0; i < uNumPoints; i++) {
+            float dist = distance(vWorldPosition, uContactPoints[i]);
+            finalIntensity += 1.0 / (1.1 + pow(dist / railCore, 2.0));
+        }
 
-  // --- PHASE SWITCHING LOGIC ---
-  float finalIntensity;
-  
-  // vWorldPosition.y is the vertical coordinate. 
-  // We check if it's part of the 'Top' (Rail) or 'Bottom' (Sleeper)
-  // Adjust -0.4 based on your specific track model's origin
-  if (vWorldPosition.y > -0.4) {
-      finalIntensity = railIntensity;
-  } else {
-      finalIntensity = supportIntensity;
-  }
+        vec3 color1 = vec3(0.0, 0.0, 0.5); // Deep Blue
+        vec3 color2 = vec3(0.0, 1.0, 1.0); // Cyan
+        vec3 color3 = vec3(0.0, 1.0, 0.0); // Green
+        vec3 color4 = vec3(1.0, 1.0, 0.0); // Yellow
+        vec3 color5 = vec3(1.0, 0.0, 0.0); // Red
+        vec3 color6 = vec3(0.4, 0.1, 0.0); // Brownish Red
 
-// Define the heatmap color stops
-vec3 color1 = vec3(0.0, 0.0, 0.5); // Deep Blue (Cold)
-vec3 color2 = vec3(0.0, 1.0, 1.0); // Cyan
-vec3 color3 = vec3(0.0, 1.0, 0.0); // Green
-vec3 color4 = vec3(1.0, 1.0, 0.0); // Yellow
-vec3 color5 = vec3(1.0, 0.5, 0.0); // Orange (New!)
-vec3 color6 = vec3(1.0, 0.0, 0.0); // Red
-vec3 color7 = vec3(0.4, 0.1, 0.0); // Brownish Red (Extreme Heat)
+        vec3 heatColor;
+        if (finalIntensity < 0.15) heatColor = mix(color1, color2, finalIntensity / 0.15);
+        else if (finalIntensity < 0.3) heatColor = mix(color2, color3, (finalIntensity - 0.15) / 0.15);
+        else if (finalIntensity < 0.45) heatColor = mix(color3, color4, (finalIntensity - 0.3) / 0.15);
+        else if (finalIntensity < 0.6) heatColor = mix(color4, color5, (finalIntensity - 0.45) / 0.15);
+        else if (finalIntensity < 0.8) heatColor = mix(color5, color6, (finalIntensity - 0.6) / 0.2);
+        else heatColor = mix(color6, color6, clamp((finalIntensity - 0.8) / 0.7, 0.0, 1.0));
 
-vec3 heatColor;
-
-// Multi-stage linear interpolation based on intensity
-if (finalIntensity < 0.15) heatColor = mix(color1, color2, finalIntensity / 0.15);
-  else if (finalIntensity < 0.3) heatColor = mix(color2, color3, (finalIntensity - 0.15) / 0.15);
-  else if (finalIntensity < 0.45) heatColor = mix(color3, color4, (finalIntensity - 0.3) / 0.15);
-  else if (finalIntensity < 0.6) heatColor = mix(color4, color5, (finalIntensity - 0.45) / 0.15);
-  else if (finalIntensity < 0.8) heatColor = mix(color5, color6, (finalIntensity - 0.6) / 0.2);
-  else heatColor = mix(color6, color7, clamp((finalIntensity - 0.8) / 0.7, 0.0, 1.0));
-
-// Apply to the final fragment
-diffuseColor.rgb = mix(diffuseColor.rgb, heatColor, 0.8);
+        diffuseColor.rgb = mix(diffuseColor.rgb, heatColor, 0.9);
         `,
       );
 
-      // We need the world position in the fragment shader
-      shader.vertexShader =
-        `
+      shader.vertexShader = `
         varying vec3 vWorldPosition;
       ` + shader.vertexShader;
-
       shader.vertexShader = shader.vertexShader.replace(
         "#include <worldpos_vertex>",
         `
@@ -148,27 +123,92 @@ diffuseColor.rgb = mix(diffuseColor.rgb, heatColor, 0.8);
         `,
       );
     };
+    
+    // --- Sleeper Material (Simpler Heatmap) ---
+    const sleeperMaterial = new THREE.MeshStandardMaterial({
+      color: 0x555555, // Slightly lighter base color
+    });
+    sleeperMaterial.onBeforeCompile = (shader) => {
+        shader.uniforms.uContactPoints = trackUniforms.uContactPoints;
+        shader.uniforms.uNumPoints = trackUniforms.uNumPoints;
+        shader.uniforms.uRadius = trackUniforms.uRadius;
+  
+        shader.fragmentShader =
+          `
+          uniform vec3 uContactPoints[80];
+          uniform int uNumPoints;
+          uniform float uRadius;
+          varying vec3 vWorldPosition;
+        ` + shader.fragmentShader;
+  
+        shader.fragmentShader = shader.fragmentShader.replace(
+          "#include <color_fragment>",
+          `
+          #include <color_fragment>
+          
+          float finalIntensity = 0.0;
+          float supportCore = uRadius; // More spread out
+  
+          for (int i = 0; i < uNumPoints; i++) {
+              float dist = distance(vWorldPosition, uContactPoints[i]);
+              finalIntensity += 1.0 / (1.5 + pow(dist / supportCore, 2.0));
+          }
+  
+          vec3 color1 = vec3(0.1, 0.0, 0.2); // Faint Purple
+          vec3 color2 = vec3(1.0, 0.5, 0.0); // Orange
+  
+          vec3 heatColor = mix(color1, color2, clamp(finalIntensity * 0.5, 0.0, 1.0));
 
-    originalModel.traverse((child) => {
+          diffuseColor.rgb = mix(diffuseColor.rgb, heatColor, 0.8);
+          `,
+        );
+  
+        shader.vertexShader =
+          `
+          varying vec3 vWorldPosition;
+        ` + shader.vertexShader;
+  
+        shader.vertexShader = shader.vertexShader.replace(
+          "#include <worldpos_vertex>",
+          `
+          #include <worldpos_vertex>
+          vWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          `,
+        );
+      };
+
+    // Apply materials
+    railModel.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        mesh.material = heatmapMaterial;
-        mesh.name = "track_piece";
-        mesh.receiveShadow = true;
+        child.material = railMaterial;
+        child.receiveShadow = true;
       }
     });
+    sleepersModel.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          child.material = sleeperMaterial;
+          child.receiveShadow = true;
+        }
+      });
 
-    const box = new THREE.Box3().setFromObject(originalModel);
-    const pieceLength = box.max.x - box.min.x;
+    // Combine into a single group for cloning, and rotate it
+    const trackSegment = new THREE.Group();
+    trackSegment.add(railModel);
+    trackSegment.add(sleepersModel);
+    trackSegment.rotation.y = Math.PI / 2; // Rotate to align with X-axis
+
+    // Calculate length and clone
+    const box = new THREE.Box3().setFromObject(trackSegment);
+    const pieceLength = box.max.x - box.min.x; // Length is now along X
 
     const numberOfPieces = Math.ceil(length / pieceLength);
 
-    // C. Repeating Loop
     for (let i = 0; i < numberOfPieces; i++) {
-      const trackClone = originalModel.clone();
-
+      const trackClone = trackSegment.clone();
+      
       const startX = x - length / 2 + pieceLength / 2;
-      trackClone.position.set(startX + i * pieceLength, y - 0.9, z - 0.6);
+      trackClone.position.set(startX + i * pieceLength, y + trackVisualYOffset, z);
+      trackClone.rotation.y += Math.PI / 2; // Apply additional 90-degree rotation
 
       scene.add(trackClone);
     }

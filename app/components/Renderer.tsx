@@ -44,7 +44,20 @@ function App() {
     const cannonDebugger = new CannonDebugger(test.scene, world);
 
     // Create Track and Train
-    createTrackSegment(test.scene, world, 0, 0, 0, 1000);
+    // NOTE: Change this value to scale the track model
+    const trackScale = 3.7;
+    // NOTE: Change this value to visually move the track model up or down
+    const trackVisualYOffset = 0.4;
+    createTrackSegment(
+      test.scene,
+      world,
+      0,
+      0,
+      0,
+      1000,
+      trackScale,
+      trackVisualYOffset,
+    );
     // ============
     // Create Multiple Train Carts
     // ============
