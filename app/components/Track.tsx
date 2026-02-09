@@ -18,7 +18,6 @@ export const createTrackSegment = (
   scale: number,
   trackVisualYOffset: number, // Add visual Y offset parameter
 ) => {
-  const trackMaterial = new CANNON.Material("track");
   const railHeight = 0.5;
   const trackWidth = 6;
   
@@ -180,12 +179,14 @@ export const createTrackSegment = (
     // Apply materials
     railModel.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
+        child.name = "rail";
         child.material = railMaterial;
         child.receiveShadow = true;
       }
     });
     sleepersModel.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
+          child.name = "sleeper";
           child.material = sleeperMaterial;
           child.receiveShadow = true;
         }

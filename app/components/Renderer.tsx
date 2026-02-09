@@ -10,28 +10,70 @@ import { trackUniforms } from "./Track";
 import { useRef, useState } from "react";
 import { MiniGraph } from "./MiniGraph";
 
-function getHeatAtPoint(targetPoint, contactPoints, radius) {
+function getHeatInfo(targetPoint, contactPoints, radius, targetType) {
   let intensity = 0.0;
   const numPoints = trackUniforms.uNumPoints.value;
+  const isRail = targetType === "rail";
 
-  // Determine which phase the inspector is in
-  const isRail = targetPoint.y > -0.4;
-
-  // Match the shader values
+  // RADIUS LOGIC: matches 'float railCore = uRadius * 0.5;'
   const core = isRail ? radius * 0.5 : radius;
-  const blur = isRail ? 1.1 : 1.5;
+
+  // BLUR LOGIC: matches '1.1 + pow(...)'
+  const blur = 1.1;
 
   for (let i = 0; i < numPoints; i++) {
     const cp = contactPoints[i];
     const dist = targetPoint.distanceTo(cp);
+    // Exact shader formula
     intensity += 1.0 / (blur + Math.pow(dist / core, 2.0));
   }
 
-  return Math.min(intensity, 2.0);
+  // Pressure constants remain the same
+  const pressureMPa = isRail
+    ? intensity * 0.06791698464
+    : intensity * 0.03395849232;
+
+  return { intensity, pressureMPa };
+}
+
+function getRailColor(intensity) {
+  const color1 = new THREE.Color(0x000080); // Deep Blue
+  const color2 = new THREE.Color(0x00ffff); // Cyan
+  const color3 = new THREE.Color(0x00ff00); // Green
+  const color4 = new THREE.Color(0xffff00); // Yellow
+  const color5 = new THREE.Color(0xff0000); // Red
+  const color6 = new THREE.Color(0.4, 0.1, 0.0); // Brownish Red (matches shader)
+
+  const finalColor = new THREE.Color();
+
+  if (intensity < 0.15) {
+    finalColor.lerpColors(color1, color2, intensity / 0.15);
+  } else if (intensity < 0.3) {
+    finalColor.lerpColors(color2, color3, (intensity - 0.15) / 0.15);
+  } else if (intensity < 0.45) {
+    finalColor.lerpColors(color3, color4, (intensity - 0.3) / 0.15);
+  } else if (intensity < 0.6) {
+    finalColor.lerpColors(color4, color5, (intensity - 0.45) / 0.15);
+  } else if (intensity < 0.8) {
+    finalColor.lerpColors(color5, color6, (intensity - 0.6) / 0.2);
+  } else {
+    const factor = Math.min((intensity - 0.8) / 0.7, 1.0);
+    finalColor.lerpColors(color6, color6, factor); // Stays at color6
+  }
+  return finalColor;
+}
+
+function getSleeperColor(intensity) {
+  const color1 = new THREE.Color(0x1a0033); // Faint Purple
+  const color2 = new THREE.Color(0xffa500); // Orange
+  const finalColor = new THREE.Color();
+  finalColor.lerpColors(color1, color2, Math.min(intensity * 0.5, 1.0));
+  return finalColor;
 }
 
 function App() {
   const [currentIntensity, setCurrentIntensity] = useState(0);
+  const inspectorTargetType = useRef(null);
   const graphDataRef = useRef([]);
   useEffect(() => {
     const test = new SceneInit("myThreeJsCanvas");
@@ -62,7 +104,7 @@ function App() {
     // Create Multiple Train Carts
     // ============
     const carts = [];
-    const numberOfCarts = 6;
+    const numberOfCarts = 2;
     const pointslength = 80;
     const spacing = 30; // Ensure they don't overlap on spawn
 
@@ -114,13 +156,11 @@ function App() {
     const mouse = new THREE.Vector2();
     // Initialization
     const inspectorSphereGeo = new THREE.SphereGeometry(0.2); // Make it big enough to see
-    const inspectorSphereMat = new THREE.MeshStandardMaterial({
+    const inspectorSphereMat = new THREE.MeshBasicMaterial({
       color: 0x00ff00,
-      emissive: 0x00ff00,
-      emissiveIntensity: 1.0,
-      depthTest: false, // Prevents track from "eating" the sphere
-      transparent: true,
-      opacity: 0.9,
+      depthTest: true,
+      transparent: false,
+      opacity: 1.0,
     });
 
     const inspectorSphere = new THREE.Mesh(
@@ -138,14 +178,12 @@ function App() {
       raycaster.setFromCamera(mouse, test.camera);
       const intersects = raycaster.intersectObjects(test.scene.children, true);
       const trackHit = intersects.find(
-        (hit) =>
-          hit.object.name === "track_piece" ||
-          hit.object.parent?.name === "track_piece",
+        (hit) => hit.object.name === "rail" || hit.object.name === "sleeper",
       );
-
       if (trackHit) {
+        console.log("Hit Target:", trackHit.object.name); // Check if this says 'sleeper' when you click the rail
         const clickedPoint = trackHit.point;
-
+        inspectorTargetType.current = trackHit.object.name;
         inspectorSphere.position.copy(clickedPoint);
         inspectorSphere.visible = true;
       }
@@ -216,41 +254,30 @@ function App() {
 
       if (inspectorSphere.visible) {
         // Re-calculate intensity every frame based on moving wheels
-        const currentIntensity = getHeatAtPoint(
+        const { intensity, pressureMPa } = getHeatInfo(
           inspectorSphere.position,
           points,
           2.0,
+          inspectorTargetType.current,
         );
-        const color1 = new THREE.Color(0x000080); // Deep Blue
-        const color2 = new THREE.Color(0x00ffff); // Cyan
-        const color3 = new THREE.Color(0x00ff00); // Green
-        const color4 = new THREE.Color(0xffff00); // Yellow
-        const color5 = new THREE.Color(0xff0000); // Red
-        const color6 = new THREE.Color(0x660000); // Brownish Red
 
-        let finalColor = new THREE.Color();
-
-        if (currentIntensity < 0.2) {
-          finalColor.lerpColors(color1, color2, currentIntensity / 0.2);
-        } else if (currentIntensity < 0.4) {
-          finalColor.lerpColors(color2, color3, (currentIntensity - 0.2) / 0.2);
-        } else if (currentIntensity < 0.6) {
-          finalColor.lerpColors(color3, color4, (currentIntensity - 0.4) / 0.2);
-        } else if (currentIntensity < 0.8) {
-          finalColor.lerpColors(color4, color5, (currentIntensity - 0.6) / 0.2);
+        let finalColor;
+        if (inspectorTargetType.current === "rail") {
+          finalColor = getRailColor(intensity);
         } else {
-          // Transition to Brownish Red for values > 0.8
-          // Clamped at 1.5 to match your shader's likely max visual range
-          const factor = Math.min((currentIntensity - 0.8) / 0.7, 1.0);
-          finalColor.lerpColors(color5, color6, factor);
+          finalColor = getSleeperColor(intensity);
         }
 
-        const pressureMPa = currentIntensity * 0.06791698464;
-        const heatFactor = Math.min(currentIntensity, 1.0);
-        const hue = 0.3 * (1 - heatFactor);
+        // Update visuals
+        inspectorSphere.material.color.copy(finalColor);
+
+        // IMPORTANT: Set renderOrder higher so the sphere glow isn't
+        // clipped by the track geometry
+        inspectorSphere.renderOrder = 999;
+
         //console.log(`Inspector Intensity: ${currentIntensity.toFixed(4)}`);
         if (frameCount % 5 === 0) {
-          setCurrentIntensity(currentIntensity);
+          setCurrentIntensity(pressureMPa); // Use pressure for display
 
           // 2. Add to our graph data array
           graphDataRef.current.push({
@@ -263,15 +290,6 @@ function App() {
             graphDataRef.current.shift();
           }
         }
-
-        inspectorSphere.material.color.copy(finalColor);
-        inspectorSphere.material.emissive.copy(finalColor);
-
-        // Dynamic glow based on total intensity
-        inspectorSphere.material.emissiveIntensity = Math.min(
-          currentIntensity * 2,
-          4.0,
-        );
       }
       requestAnimationFrame(animate);
     };
@@ -294,9 +312,7 @@ function App() {
           borderRadius: "8px",
         }}
       >
-        <div>
-          Pressure(MPa): {(currentIntensity * 0.06791698464).toFixed(4)}
-        </div>
+        <div>Pressure(MPa): {currentIntensity.toFixed(4)}</div>
         {/* Pass the Ref here! */}
         <MiniGraph dataRef={graphDataRef} />
       </div>
