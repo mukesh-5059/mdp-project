@@ -10,30 +10,74 @@ import { trackUniforms } from "./Track";
 import { useRef, useState } from "react";
 import { MiniGraph } from "./MiniGraph";
 
-function getHeatInfo(targetPoint, contactPoints, radius, targetType) {
-  let intensity = 0.0;
-  const numPoints = trackUniforms.uNumPoints.value;
-  const isRail = targetType === "rail";
+// A JS implementation of the GLSL bending stress formula
+function getBendingStress(dist, l, force) {
+  const x = Math.abs(dist);
+  const bracket = Math.sin(x / l) - Math.cos(x / l);
+  const exponent = Math.exp(-x / l);
+  // Invert the result to align with visual expectation (compression = hot, relief = cool)
+  return -0.25 * force * l * exponent * bracket;
+}
 
-  // RADIUS LOGIC: matches 'float railCore = uRadius * 0.5;'
-  const core = isRail ? radius * 0.5 : radius;
+// A new, comprehensive function to get the intensity at a point, mirroring the shaders
+function getHeatInfo(
+  targetPoint,
+  wheelPositions,
+  wheelCount,
+  targetType,
+  lChar,
+  P,
+  stressScale,
+) {
+  let finalIntensity = 0;
 
-  // BLUR LOGIC: matches '1.1 + pow(...)'
-  const blur = 1.1;
+  if (targetType === "rail") {
+    let totalStress = 0;
+    for (let i = 0; i < wheelCount; i++) {
+      const wheelPos = wheelPositions[i];
+      const dist = targetPoint.x - wheelPos.x;
+      if (Math.abs(targetPoint.z - wheelPos.z) < 2.0 && Math.abs(dist) < 50.0) {
+        totalStress += getBendingStress(dist, lChar, P);
+      }
+    }
 
-  for (let i = 0; i < numPoints; i++) {
-    const cp = contactPoints[i];
-    const dist = targetPoint.distanceTo(cp);
-    // Exact shader formula
-    intensity += 1.0 / (blur + Math.pow(dist / core, 2.0));
+    if (totalStress < 0.0) {
+      // For rails, negative stress is blue, but for the inspector we can show it as 0
+      finalIntensity = 0;
+    } else {
+      finalIntensity = totalStress * stressScale;
+    }
+  } else if (targetType === "sleeper") {
+    // Replicates the final "projection" model for sleepers
+    let stressLeft = 0;
+    let stressRight = 0;
+    for (let i = 0; i < wheelCount; i++) {
+      const wheelPos = wheelPositions[i];
+      const distX = targetPoint.x - wheelPos.x;
+      if (Math.abs(distX) < 50.0) {
+        if (wheelPos.z > 0.0) {
+          stressLeft += getBendingStress(distX, lChar, P);
+        } else {
+          stressRight += getBendingStress(distX, lChar, P);
+        }
+      }
+    }
+
+    const baseStressX = Math.max(0.0, Math.max(stressLeft, stressRight));
+    const railZPosition = 3.0;
+    const distToNearestRail = Math.min(
+      Math.abs(targetPoint.z - railZPosition),
+      Math.abs(targetPoint.z + railZPosition),
+    );
+    const zFalloff =
+      1.0 - THREE.MathUtils.smoothstep(0.0, 2.5, distToNearestRail);
+    finalIntensity = baseStressX * 0.6 * zFalloff * stressScale * 1.5;
   }
 
-  // Pressure constants remain the same
-  const pressureMPa = isRail
-    ? intensity * 0.06791698464
-    : intensity * 0.03395849232;
+  // This pressure value is just an approximation for the UI display
+  const pressureMPa = finalIntensity * 500;
 
-  return { intensity, pressureMPa };
+  return { intensity: finalIntensity, pressureMPa };
 }
 
 function getRailColor(intensity) {
@@ -63,12 +107,9 @@ function getRailColor(intensity) {
   return finalColor;
 }
 
+// Sleeper now uses the same color ramp as the rail
 function getSleeperColor(intensity) {
-  const color1 = new THREE.Color(0x1a0033); // Faint Purple
-  const color2 = new THREE.Color(0xffa500); // Orange
-  const finalColor = new THREE.Color();
-  finalColor.lerpColors(color1, color2, Math.min(intensity * 0.5, 1.0));
-  return finalColor;
+  return getRailColor(intensity);
 }
 
 function App() {
@@ -85,6 +126,15 @@ function App() {
     const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
     const cannonDebugger = new CannonDebugger(test.scene, world);
 
+    // Add a large ground plane
+    const planeGeometry = new THREE.PlaneGeometry(2000, 2000);
+    const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
+    planeMesh.rotation.x = -Math.PI / 2; // Rotate to lay flat
+    planeMesh.position.y = -0.5; // Position below the track
+    planeMesh.receiveShadow = true; // Allow it to receive shadows
+    test.scene.add(planeMesh);
+
     // Create Track and Train
     // NOTE: Change this value to scale the track model
     const trackScale = 3.7;
@@ -96,7 +146,7 @@ function App() {
       0,
       0,
       0,
-      1000,
+      800,
       trackScale,
       trackVisualYOffset,
     );
@@ -104,7 +154,7 @@ function App() {
     // Create Multiple Train Carts
     // ============
     const carts = [];
-    const numberOfCarts = 2;
+    const numberOfCarts = 10;
     const pointslength = 80;
     const spacing = 30; // Ensure they don't overlap on spawn
 
@@ -231,34 +281,70 @@ function App() {
       world.fixedStep();
       cannonDebugger.update();
       carts.forEach((cart) => cart.update());
-      const points = [];
-      // Update Contacts
-      contactPoints.forEach((p) => (p.visible = false));
-      world.contacts.forEach((contact, i) => {
-        if (i < contactPoints.length) {
-          const worldPos = new CANNON.Vec3();
-          contact.bi.position.vadd(contact.ri, worldPos);
-          contactPoints[i].position.set(worldPos.x, worldPos.y, worldPos.z);
-          contactPoints[i].visible = true;
-          points.push(new THREE.Vector3(worldPos.x, worldPos.y, worldPos.z));
-        }
-      });
-      trackUniforms.uNumPoints.value = points.length;
 
-      trackUniforms.uContactPoints.value = [
-        ...points,
-        ...new Array(pointslength - points.length).fill(
-          new THREE.Vector3(0, -1000, 0),
+      // Make the directional light follow the train
+      if (carts.length > 0) {
+        const leadCartBody = carts[0].chassisBody;
+        const light = test.directionalLight;
+        const lightTarget = test.directionalLight.target;
+
+        // Set the target's position to the lead cart's position
+        lightTarget.position.copy(leadCartBody.position);
+
+        // Update the light's position to be offset from the cart
+        light.position
+          .copy(leadCartBody.position)
+          .add(new THREE.Vector3(20, 40, 40));
+
+        // Add the target to the scene if it's not already there
+        if (!lightTarget.parent) {
+          test.scene.add(lightTarget);
+        }
+
+        lightTarget.updateMatrixWorld();
+      }
+
+      // --- NEW: Update Wheel Positions for Shader ---
+      const wheelPositions = [];
+      carts.forEach((cart) => {
+        cart.vehicle.wheelBodies.forEach((wheelBody) => {
+          // Convert Cannon.js Vec3 to Three.js Vector3
+          const wheelPos = new THREE.Vector3(
+            wheelBody.position.x,
+            wheelBody.position.y,
+            wheelBody.position.z,
+          );
+          wheelPositions.push(wheelPos);
+        });
+      });
+
+      trackUniforms.uWheelCount.value = wheelPositions.length;
+      // Pad the array to match the fixed size expected by the shader
+      trackUniforms.uWheelPositions.value = [
+        ...wheelPositions,
+        ...new Array(pointslength - wheelPositions.length).fill(
+          new THREE.Vector3(0, -1000, 0), // Place unused points far away
         ),
       ];
 
+      // --- OLD Contact Points Logic (for inspector sphere) ---
+      const points = [];
+      world.contacts.forEach((contact) => {
+        const worldPos = new CANNON.Vec3();
+        contact.bi.position.vadd(contact.ri, worldPos);
+        points.push(new THREE.Vector3(worldPos.x, worldPos.y, worldPos.z));
+      });
+
       if (inspectorSphere.visible) {
-        // Re-calculate intensity every frame based on moving wheels
+        // Re-calculate intensity every frame with the new, accurate logic
         const { intensity, pressureMPa } = getHeatInfo(
           inspectorSphere.position,
-          points,
-          2.0,
+          trackUniforms.uWheelPositions.value,
+          trackUniforms.uWheelCount.value,
           inspectorTargetType.current,
+          trackUniforms.uLChar.value,
+          trackUniforms.uP.value,
+          trackUniforms.uStressScale.value,
         );
 
         let finalColor;
@@ -270,22 +356,18 @@ function App() {
 
         // Update visuals
         inspectorSphere.material.color.copy(finalColor);
-
-        // IMPORTANT: Set renderOrder higher so the sphere glow isn't
-        // clipped by the track geometry
         inspectorSphere.renderOrder = 999;
 
-        //console.log(`Inspector Intensity: ${currentIntensity.toFixed(4)}`);
         if (frameCount % 5 === 0) {
           setCurrentIntensity(pressureMPa); // Use pressure for display
 
-          // 2. Add to our graph data array
+          // Add to graph data
           graphDataRef.current.push({
             time: Date.now(),
             value: pressureMPa,
           });
 
-          // Keep only the last 100 points so the graph doesn't lag
+          // Keep only the last 100 points
           if (graphDataRef.current.length > 100) {
             graphDataRef.current.shift();
           }
