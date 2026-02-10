@@ -6,6 +6,7 @@ import CannonDebugger from "cannon-es-debugger";
 import SceneInit from "./lib/SceneInit";
 import { createTrackSegment } from "./Track";
 import { createTrainCompartment } from "./Train";
+
 import { trackUniforms } from "./Track";
 import { useRef, useState } from "react";
 import { MiniGraph } from "./MiniGraph";
@@ -64,13 +65,26 @@ function getHeatInfo(
     }
 
     const baseStressX = Math.max(0.0, Math.max(stressLeft, stressRight));
-    const railZPosition = 3.0;
+
+    // Logic to match the new sleeper shader
+    const trackWidth = 6.0; // Same value as in Track.tsx
+    const railZPosition = trackWidth / 2.0;
     const distToNearestRail = Math.min(
       Math.abs(targetPoint.z - railZPosition),
       Math.abs(targetPoint.z + railZPosition),
     );
+
+    let falloffSpread;
+    // If the pixel is between the Z=0 axis and the rail's centerline, spread the falloff more
+    if (Math.abs(targetPoint.z) < railZPosition) {
+      falloffSpread = 4.0;
+    } else {
+      falloffSpread = 2.5;
+    }
+
     const zFalloff =
-      1.0 - THREE.MathUtils.smoothstep(0.0, 2.5, distToNearestRail);
+      1.0 - THREE.MathUtils.smoothstep(0.0, falloffSpread, distToNearestRail);
+
     finalIntensity = baseStressX * 0.6 * zFalloff * stressScale * 1.5;
   }
 
