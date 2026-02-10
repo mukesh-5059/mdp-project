@@ -49,7 +49,6 @@ export default class SceneInit {
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
-    document.body.appendChild(this.renderer.domElement);
     
     // Post-processing setup
     this.composer = new EffectComposer(this.renderer);
@@ -68,7 +67,6 @@ export default class SceneInit {
     this.clock = new THREE.Clock();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.stats = Stats();
-    document.body.appendChild(this.stats.dom);
 
     // ambient light which is for the whole scene
     this.ambientLight = new THREE.AmbientLight(0xffffff, 0.5);

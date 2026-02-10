@@ -10,6 +10,74 @@ import { createTrainCompartment } from "./Train";
 import { trackUniforms } from "./Track";
 import { useRef, useState } from "react";
 import { MiniGraph } from "./MiniGraph";
+import { StatsWidget } from "./StatsWidget";
+
+const CONFIG = {
+  PIEZO_THICKNESS: 1e-1,
+  PIEZO_VOLTAGE_CONSTANT: 0.02, // Vm/N or Vm/Pa
+  HEAT_INFO: {
+    Z_AXIS_DISTANCE_CHECK: 2.0,
+    X_AXIS_DISTANCE_CHECK: 50.0,
+  },
+  HEATMAP_COLOR: {
+    COLOR1: new THREE.Color(0x000080), // Deep Blue
+    COLOR2: new THREE.Color(0x00ffff), // Cyan
+    COLOR3: new THREE.Color(0x00ff00), // Green
+    COLOR4: new THREE.Color(0xffff00), // Yellow
+    COLOR5: new THREE.Color(0xff0000), // Red
+    COLOR6: new THREE.Color(0.4, 0.1, 0.0), // Brownish Red (matches shader)
+    INTENSITY_THRESHOLDS: {
+      T1: 0.15,
+      T2: 0.3,
+      T3: 0.45,
+      T4: 0.6,
+      T5: 0.8,
+    },
+  },
+  RAIL_COLOR: {
+    RELIEF_INTENSITY_MULTIPLIER: 2.0,
+    RELIEF_COLOR1: new THREE.Color(0.05, 0.05, 0.05), // Corresponds to vec3(0.05)
+    RELIEF_COLOR2: new THREE.Color(0.0, 0.5, 1.0), // Corresponds to vec3(0.0, 0.5, 1.0)
+  },
+  SLEEPER_COLOR: {
+    INTENSITY_MULTIPLIER_1: 0.6,
+    INTENSITY_MULTIPLIER_2: 1.5,
+  },
+  APP: {
+    GRAVITY: -9.82,
+    AXES_HELPER_SIZE: 8,
+    PLANE_GEOMETRY_SIZE: 2000,
+    PLANE_MESH_POSITION_Y: -0.5,
+    TRACK_SCALE: 3.7,
+    TRACK_VISUAL_Y_OFFSET: 0.4,
+    TRACK_LENGTH: 800,
+    NUMBER_OF_CARTS: 10,
+    POINTS_LENGTH: 80,
+    CART_SPACING: 30,
+    CHASSIS_MODEL_SCALE: 50,
+    WHEEL_MODEL_SCALE: 50,
+    PIVOT_OFFSET: 13.5,
+    INSPECTOR_SPHERE_SIZE: 0.2,
+    MAX_SPEED: 900,
+    LIGHT_POSITION_OFFSET: new THREE.Vector3(20, 40, 40),
+    UNUSED_POINTS_Y_POSITION: -1000,
+    GRAPH_UPDATE_FREQUENCY: 5, // every 5 frames
+    GRAPH_DATA_POINTS: 100,
+    STRESS_GRAPH: {
+      MIN_VAL: -900000,
+      MAX_VAL: 900000,
+    },
+    VOLTAGE_GRAPH: {
+      MIN_VAL: -1000.0,
+      MAX_VAL: 1000.0,
+    },
+    L_CHAR: 13,
+    P: 125000.0,
+    RAIL_Z_POSITION: 3.0,
+    SLEEPER_FALLOFF_SPREAD_INNER: 6.0,
+    SLEEPER_FALLOFF_SPREAD_OUTER: 4.0,
+  },
+};
 
 // A JS implementation of the GLSL bending stress formula
 function getBendingStress(dist, l, force) {
@@ -18,6 +86,12 @@ function getBendingStress(dist, l, force) {
   const exponent = Math.exp(-x / l);
   // Invert the result to align with visual expectation (compression = hot, relief = cool)
   return -0.25 * force * l * exponent * bracket;
+}
+
+// JS implementation of GLSL's smoothstep
+function smoothstep(edge0, edge1, x) {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3.0 - 2.0 * t);
 }
 
 // A new, comprehensive function to get the intensity at a point, mirroring the shaders
@@ -30,32 +104,32 @@ function getHeatInfo(
   P,
   stressScale,
 ) {
-  let finalIntensity = 0;
+  let rawStress = 0;
+  let pressureMPa = 0;
 
   if (targetType === "rail") {
     let totalStress = 0;
     for (let i = 0; i < wheelCount; i++) {
       const wheelPos = wheelPositions[i];
       const dist = targetPoint.x - wheelPos.x;
-      if (Math.abs(targetPoint.z - wheelPos.z) < 2.0 && Math.abs(dist) < 50.0) {
+      if (
+        Math.abs(targetPoint.z - wheelPos.z) <
+          CONFIG.HEAT_INFO.Z_AXIS_DISTANCE_CHECK &&
+        Math.abs(dist) < CONFIG.HEAT_INFO.X_AXIS_DISTANCE_CHECK
+      ) {
         totalStress += getBendingStress(dist, lChar, P);
       }
     }
-
-    if (totalStress < 0.0) {
-      // For rails, negative stress is blue, but for the inspector we can show it as 0
-      finalIntensity = 0;
-    } else {
-      finalIntensity = totalStress * stressScale;
-    }
+    rawStress = totalStress;
+    pressureMPa = rawStress;
   } else if (targetType === "sleeper") {
-    // Replicates the final "projection" model for sleepers
     let stressLeft = 0;
     let stressRight = 0;
     for (let i = 0; i < wheelCount; i++) {
       const wheelPos = wheelPositions[i];
       const distX = targetPoint.x - wheelPos.x;
-      if (Math.abs(distX) < 50.0) {
+      if (Math.abs(distX) < CONFIG.HEAT_INFO.X_AXIS_DISTANCE_CHECK) {
+        // Left rail is on the +Z side, Right rail is on the -Z side
         if (wheelPos.z > 0.0) {
           stressLeft += getBendingStress(distX, lChar, P);
         } else {
@@ -63,136 +137,215 @@ function getHeatInfo(
         }
       }
     }
+    const baseStressX =
+      Math.abs(stressLeft) > Math.abs(stressRight) ? stressLeft : stressRight;
 
-    const baseStressX = Math.max(0.0, Math.max(stressLeft, stressRight));
-
-    // Logic to match the new sleeper shader
-    const trackWidth = 6.0; // Same value as in Track.tsx
-    const railZPosition = trackWidth / 2.0;
+    const railZPosition = CONFIG.APP.RAIL_Z_POSITION;
     const distToNearestRail = Math.min(
       Math.abs(targetPoint.z - railZPosition),
       Math.abs(targetPoint.z + railZPosition),
     );
 
     let falloffSpread;
-    // If the pixel is between the Z=0 axis and the rail's centerline, spread the falloff more
     if (Math.abs(targetPoint.z) < railZPosition) {
-      falloffSpread = 4.0;
+      falloffSpread = CONFIG.APP.SLEEPER_FALLOFF_SPREAD_INNER;
     } else {
-      falloffSpread = 2.5;
+      falloffSpread = CONFIG.APP.SLEEPER_FALLOFF_SPREAD_OUTER;
     }
 
-    const zFalloff =
-      1.0 - THREE.MathUtils.smoothstep(0.0, falloffSpread, distToNearestRail);
+    const zFalloff = 1.0 - smoothstep(0.0, falloffSpread, distToNearestRail);
 
-    finalIntensity = baseStressX * 0.6 * zFalloff * stressScale * 1.5;
+    const modulatedStress = baseStressX * zFalloff;
+    rawStress = modulatedStress;
+    pressureMPa = rawStress;
   }
 
-  // This pressure value is just an approximation for the UI display
-  const pressureMPa = finalIntensity * 500;
+  // Calculate piezoVoltage
+  const piezoVoltage =
+    rawStress * CONFIG.PIEZO_THICKNESS * CONFIG.PIEZO_VOLTAGE_CONSTANT;
 
-  return { intensity: finalIntensity, pressureMPa };
+  return { rawStress, pressureMPa, piezoVoltage };
 }
 
-function getRailColor(intensity) {
-  const color1 = new THREE.Color(0x000080); // Deep Blue
-  const color2 = new THREE.Color(0x00ffff); // Cyan
-  const color3 = new THREE.Color(0x00ff00); // Green
-  const color4 = new THREE.Color(0xffff00); // Yellow
-  const color5 = new THREE.Color(0xff0000); // Red
-  const color6 = new THREE.Color(0.4, 0.1, 0.0); // Brownish Red (matches shader)
-
+function getHeatmapColor(finalIntensity) {
   const finalColor = new THREE.Color();
+  const thresholds = CONFIG.HEATMAP_COLOR.INTENSITY_THRESHOLDS;
 
-  if (intensity < 0.15) {
-    finalColor.lerpColors(color1, color2, intensity / 0.15);
-  } else if (intensity < 0.3) {
-    finalColor.lerpColors(color2, color3, (intensity - 0.15) / 0.15);
-  } else if (intensity < 0.45) {
-    finalColor.lerpColors(color3, color4, (intensity - 0.3) / 0.15);
-  } else if (intensity < 0.6) {
-    finalColor.lerpColors(color4, color5, (intensity - 0.45) / 0.15);
-  } else if (intensity < 0.8) {
-    finalColor.lerpColors(color5, color6, (intensity - 0.6) / 0.2);
+  if (finalIntensity < thresholds.T1) {
+    finalColor.lerpColors(
+      CONFIG.HEATMAP_COLOR.COLOR1,
+      CONFIG.HEATMAP_COLOR.COLOR2,
+      finalIntensity / thresholds.T1,
+    );
+  } else if (finalIntensity < thresholds.T2) {
+    finalColor.lerpColors(
+      CONFIG.HEATMAP_COLOR.COLOR2,
+      CONFIG.HEATMAP_COLOR.COLOR3,
+      (finalIntensity - thresholds.T1) / (thresholds.T2 - thresholds.T1),
+    );
+  } else if (finalIntensity < thresholds.T3) {
+    finalColor.lerpColors(
+      CONFIG.HEATMAP_COLOR.COLOR3,
+      CONFIG.HEATMAP_COLOR.COLOR4,
+      (finalIntensity - thresholds.T2) / (thresholds.T3 - thresholds.T2),
+    );
+  } else if (finalIntensity < thresholds.T4) {
+    finalColor.lerpColors(
+      CONFIG.HEATMAP_COLOR.COLOR4,
+      CONFIG.HEATMAP_COLOR.COLOR5,
+      (finalIntensity - thresholds.T3) / (thresholds.T4 - thresholds.T3),
+    );
+  } else if (finalIntensity < thresholds.T5) {
+    finalColor.lerpColors(
+      CONFIG.HEATMAP_COLOR.COLOR5,
+      CONFIG.HEATMAP_COLOR.COLOR6,
+      (finalIntensity - thresholds.T4) / (thresholds.T5 - thresholds.T4),
+    );
   } else {
-    const factor = Math.min((intensity - 0.8) / 0.7, 1.0);
-    finalColor.lerpColors(color6, color6, factor); // Stays at color6
+    const factor = Math.min(
+      (finalIntensity - thresholds.T5) / (1.0 - thresholds.T5),
+      1.0,
+    );
+    finalColor.lerpColors(
+      CONFIG.HEATMAP_COLOR.COLOR6,
+      CONFIG.HEATMAP_COLOR.COLOR6,
+      factor,
+    ); // Stays at color6
   }
   return finalColor;
 }
 
+function getRailColor(rawStress, stressScale) {
+  if (rawStress < 0) {
+    const finalColor = new THREE.Color();
+    // Negative stress (relief) is visualized as blue
+    const reliefIntensity =
+      Math.abs(rawStress) *
+      stressScale *
+      CONFIG.RAIL_COLOR.RELIEF_INTENSITY_MULTIPLIER;
+    finalColor.lerpColors(
+      CONFIG.RAIL_COLOR.RELIEF_COLOR1,
+      CONFIG.RAIL_COLOR.RELIEF_COLOR2,
+      Math.max(0.0, Math.min(reliefIntensity, 1.0)),
+    ); // Clamp alpha
+    return finalColor;
+  }
+  // Positive stress (compression) uses the multi-color heatmap
+  const finalIntensity = rawStress * stressScale;
+  return getHeatmapColor(finalIntensity);
+}
+
 // Sleeper now uses the same color ramp as the rail
-function getSleeperColor(intensity) {
-  return getRailColor(intensity);
+function getSleeperColor(rawStress, stressScale) {
+  if (rawStress < 0) {
+    // Same relief logic as rail
+    return getRailColor(rawStress, stressScale);
+  }
+  // Positive stress (compression) uses the multi-color heatmap
+  const finalIntensity =
+    rawStress *
+    CONFIG.SLEEPER_COLOR.INTENSITY_MULTIPLIER_1 *
+    stressScale *
+    CONFIG.SLEEPER_COLOR.INTENSITY_MULTIPLIER_2;
+  return getHeatmapColor(finalIntensity);
 }
 
 function App() {
   const [currentIntensity, setCurrentIntensity] = useState(0);
+  const [currentVoltage, setCurrentVoltage] = useState(0);
+  const [maxStress, setMaxStress] = useState(0);
+  const [maxVoltage, setMaxVoltage] = useState(0);
+
   const inspectorTargetType = useRef(null);
+
   const graphDataRef = useRef([]);
+
+  const voltageGraphDataRef = useRef([]);
+
   useEffect(() => {
     const test = new SceneInit("myThreeJsCanvas");
     test.initialize();
     test.animate();
-    const axesHelper = new THREE.AxesHelper(8);
+    const axesHelper = new THREE.AxesHelper(CONFIG.APP.AXES_HELPER_SIZE);
     test.scene.add(axesHelper);
-
-    const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
+    const world = new CANNON.World({
+      gravity: new CANNON.Vec3(0, CONFIG.APP.GRAVITY, 0),
+    });
     const cannonDebugger = new CannonDebugger(test.scene, world);
 
     // Add a large ground plane
-    const planeGeometry = new THREE.PlaneGeometry(2000, 2000);
+    const planeGeometry = new THREE.PlaneGeometry(
+      CONFIG.APP.PLANE_GEOMETRY_SIZE,
+      CONFIG.APP.PLANE_GEOMETRY_SIZE,
+    );
+
     const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
     const planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
     planeMesh.rotation.x = -Math.PI / 2; // Rotate to lay flat
-    planeMesh.position.y = -0.5; // Position below the track
+    planeMesh.position.y = CONFIG.APP.PLANE_MESH_POSITION_Y; // Position below the track
     planeMesh.receiveShadow = true; // Allow it to receive shadows
     test.scene.add(planeMesh);
 
     // Create Track and Train
-    // NOTE: Change this value to scale the track model
-    const trackScale = 3.7;
-    // NOTE: Change this value to visually move the track model up or down
-    const trackVisualYOffset = 0.4;
     createTrackSegment(
       test.scene,
       world,
       0,
       0,
       0,
-      800,
-      trackScale,
-      trackVisualYOffset,
+      CONFIG.APP.TRACK_LENGTH,
+      CONFIG.APP.TRACK_SCALE,
+      CONFIG.APP.TRACK_VISUAL_Y_OFFSET,
     );
     // ============
     // Create Multiple Train Carts
     // ============
     const carts = [];
-    const numberOfCarts = 10;
-    const pointslength = 80;
-    const spacing = 30; // Ensure they don't overlap on spawn
-
+    const numberOfCarts = CONFIG.APP.NUMBER_OF_CARTS;
+    const pointslength = CONFIG.APP.POINTS_LENGTH;
+    const spacing = CONFIG.APP.CART_SPACING; // Ensure they don't overlap on spawn
     const loader = new GLTFLoader();
 
     Promise.all([
       loader.loadAsync("/assets/train/chassis1.glb"),
+
       loader.loadAsync("/assets/train/wheel1.glb"),
     ]).then(([chassisGltf, wheelGltf]) => {
       const chassisModel = chassisGltf.scene;
-      chassisModel.scale.set(50, 50, 50); // Scale up by 50 times
+
+      chassisModel.scale.set(
+        CONFIG.APP.CHASSIS_MODEL_SCALE,
+
+        CONFIG.APP.CHASSIS_MODEL_SCALE,
+
+        CONFIG.APP.CHASSIS_MODEL_SCALE,
+      ); // Scale up by 50 times
 
       const wheelModel = wheelGltf.scene;
-      wheelModel.scale.set(50, 50, 50); // Scale up by 50 times
+
+      wheelModel.scale.set(
+        CONFIG.APP.WHEEL_MODEL_SCALE,
+
+        CONFIG.APP.WHEEL_MODEL_SCALE,
+
+        CONFIG.APP.WHEEL_MODEL_SCALE,
+      ); // Scale up by 50 times
 
       for (let i = 0; i < numberOfCarts; i++) {
         const spawnX = i * -spacing;
+
         const newCart = createTrainCompartment(
           test.scene,
+
           world,
+
           new CANNON.Vec3(spawnX, 5, 0),
+
           chassisModel,
+
           wheelModel,
         );
+
         carts.push(newCart);
       }
 
@@ -200,18 +353,15 @@ function App() {
       for (let i = 0; i < carts.length - 1; i++) {
         const leader = carts[i].chassisBody;
         const follower = carts[i + 1].chassisBody;
-
         // The trainLength is 26, so the edge is at 13.
         // We add a tiny bit of extra space (0.5) to prevent collisions.
-        const pivotOffset = 13.5;
-
+        const pivotOffset = CONFIG.APP.PIVOT_OFFSET;
         const joint = new CANNON.PointToPointConstraint(
           leader,
           new CANNON.Vec3(-pivotOffset, 0, 0), // Back of leader (Negative X)
           follower,
           new CANNON.Vec3(pivotOffset, 0, 0), // Front of follower (Positive X)
         );
-
         world.addConstraint(joint);
       }
     });
@@ -219,7 +369,9 @@ function App() {
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     // Initialization
-    const inspectorSphereGeo = new THREE.SphereGeometry(0.2); // Make it big enough to see
+    const inspectorSphereGeo = new THREE.SphereGeometry(
+      CONFIG.APP.INSPECTOR_SPHERE_SIZE,
+    ); // Make it big enough to see
     const inspectorSphereMat = new THREE.MeshBasicMaterial({
       color: 0x00ff00,
       depthTest: true,
@@ -229,61 +381,94 @@ function App() {
 
     const inspectorSphere = new THREE.Mesh(
       inspectorSphereGeo,
+
       inspectorSphereMat,
     );
+
     inspectorSphere.renderOrder = 0; // Force it to draw on top of everything
+
     inspectorSphere.visible = false;
+
     test.scene.add(inspectorSphere);
+
     inspectorSphere.frustumCulled = false;
 
     window.addEventListener("pointerdown", (event) => {
       mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+
       mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
       raycaster.setFromCamera(mouse, test.camera);
+
       const intersects = raycaster.intersectObjects(test.scene.children, true);
+
       const trackHit = intersects.find(
         (hit) => hit.object.name === "rail" || hit.object.name === "sleeper",
       );
+
       if (trackHit) {
         console.log("Hit Target:", trackHit.object.name); // Check if this says 'sleeper' when you click the rail
+
         const clickedPoint = trackHit.point;
+
         inspectorTargetType.current = trackHit.object.name;
+
         inspectorSphere.position.copy(clickedPoint);
+
         inspectorSphere.visible = true;
+        setMaxStress(0);
+        setMaxVoltage(0);
       }
     });
 
     // Input Handling
-    const maxspeed = 900;
+
+    const maxspeed = CONFIG.APP.MAX_SPEED;
+
     const handleKey = (e: KeyboardEvent, isDown: boolean) => {
       const force = isDown ? maxspeed : 0;
+
       if (e.key === "w" || e.key === "ArrowUp") {
         carts[0].vehicle.setWheelForce(force, 0);
+
         carts[0].vehicle.setWheelForce(force, 1);
+
         carts[0].vehicle.setWheelForce(force, 2);
+
         carts[0].vehicle.setWheelForce(force, 3);
       }
+
       if (e.key === "s" || e.key === "ArrowDown") {
         carts[0].vehicle.setWheelForce(isDown ? -force / 2 : 0, 0);
+
         carts[0].vehicle.setWheelForce(isDown ? -force / 2 : 0, 1);
+
         carts[0].vehicle.setWheelForce(isDown ? -force / 2 : 0, 2);
+
         carts[0].vehicle.setWheelForce(isDown ? -force / 2 : 0, 3);
       }
     };
 
     window.addEventListener("keydown", (e) => handleKey(e, true));
+
     window.addEventListener("keyup", (e) => handleKey(e, false));
 
     // Contact Points setup
+
     const contactPoints: THREE.Mesh[] = Array.from(
       { length: pointslength },
+
       () => {
         const p = new THREE.Mesh(
           new THREE.SphereGeometry(0.1),
+
           new THREE.MeshBasicMaterial({ color: 0xff0000 }),
         );
+
         p.visible = false;
+
         test.scene.add(p);
+
         return p;
       },
     );
@@ -292,25 +477,36 @@ function App() {
 
     const animate = () => {
       frameCount++;
+
       world.fixedStep();
+
       cannonDebugger.update();
+
       carts.forEach((cart) => cart.update());
 
       // Make the directional light follow the train
+
       if (carts.length > 0) {
         const leadCartBody = carts[0].chassisBody;
+
         const light = test.directionalLight;
+
         const lightTarget = test.directionalLight.target;
 
         // Set the target's position to the lead cart's position
+
         lightTarget.position.copy(leadCartBody.position);
 
         // Update the light's position to be offset from the cart
+
         light.position
+
           .copy(leadCartBody.position)
-          .add(new THREE.Vector3(20, 40, 40));
+
+          .add(CONFIG.APP.LIGHT_POSITION_OFFSET);
 
         // Add the target to the scene if it's not already there
+
         if (!lightTarget.parent) {
           test.scene.add(lightTarget);
         }
@@ -319,39 +515,63 @@ function App() {
       }
 
       // --- NEW: Update Wheel Positions for Shader ---
+
       const wheelPositions = [];
+
       carts.forEach((cart) => {
         cart.vehicle.wheelBodies.forEach((wheelBody) => {
           // Convert Cannon.js Vec3 to Three.js Vector3
+
           const wheelPos = new THREE.Vector3(
             wheelBody.position.x,
+
             wheelBody.position.y,
+
             wheelBody.position.z,
           );
+
           wheelPositions.push(wheelPos);
         });
       });
 
       trackUniforms.uWheelCount.value = wheelPositions.length;
+
       // Pad the array to match the fixed size expected by the shader
+
       trackUniforms.uWheelPositions.value = [
         ...wheelPositions,
+
         ...new Array(pointslength - wheelPositions.length).fill(
-          new THREE.Vector3(0, -1000, 0), // Place unused points far away
+          new THREE.Vector3(0, CONFIG.APP.UNUSED_POINTS_Y_POSITION, 0), // Place unused points far away
         ),
       ];
 
       // --- OLD Contact Points Logic (for inspector sphere) ---
+
       const points = [];
+
       world.contacts.forEach((contact) => {
         const worldPos = new CANNON.Vec3();
+
         contact.bi.position.vadd(contact.ri, worldPos);
+
         points.push(new THREE.Vector3(worldPos.x, worldPos.y, worldPos.z));
       });
 
       if (inspectorSphere.visible) {
         // Re-calculate intensity every frame with the new, accurate logic
-        const { intensity, pressureMPa } = getHeatInfo(
+
+        const { a, pressureMPa, piezoVoltage } = getHeatInfo(
+          inspectorSphere.position,
+          trackUniforms.uWheelPositions.value,
+          trackUniforms.uWheelCount.value,
+          inspectorTargetType.current,
+          CONFIG.APP.L_CHAR,
+          CONFIG.APP.P,
+          trackUniforms.uStressScale.value,
+        );
+
+        const { rawStress, b, c } = getHeatInfo(
           inspectorSphere.position,
           trackUniforms.uWheelPositions.value,
           trackUniforms.uWheelCount.value,
@@ -362,33 +582,64 @@ function App() {
         );
 
         let finalColor;
+
         if (inspectorTargetType.current === "rail") {
-          finalColor = getRailColor(intensity);
+          finalColor = getRailColor(
+            rawStress,
+
+            trackUniforms.uStressScale.value,
+          );
         } else {
-          finalColor = getSleeperColor(intensity);
+          finalColor = getSleeperColor(
+            rawStress,
+
+            trackUniforms.uStressScale.value,
+          );
         }
 
         // Update visuals
+
         inspectorSphere.material.color.copy(finalColor);
+
         inspectorSphere.renderOrder = 999;
 
-        if (frameCount % 5 === 0) {
+        if (frameCount % CONFIG.APP.GRAPH_UPDATE_FREQUENCY === 0) {
           setCurrentIntensity(pressureMPa); // Use pressure for display
+          setCurrentVoltage(piezoVoltage);
+          setMaxStress((prevMax) => Math.max(prevMax, pressureMPa));
+          setMaxVoltage((prevMax) => Math.max(prevMax, Math.abs(piezoVoltage)));
 
           // Add to graph data
+
           graphDataRef.current.push({
             time: Date.now(),
+
             value: pressureMPa,
           });
 
+          voltageGraphDataRef.current.push({
+            time: Date.now(),
+
+            value: piezoVoltage,
+          });
+
           // Keep only the last 100 points
-          if (graphDataRef.current.length > 100) {
+
+          if (graphDataRef.current.length > CONFIG.APP.GRAPH_DATA_POINTS) {
             graphDataRef.current.shift();
+          }
+
+          if (
+            voltageGraphDataRef.current.length > CONFIG.APP.GRAPH_DATA_POINTS
+          ) {
+            voltageGraphDataRef.current.shift();
           }
         }
       }
+
       requestAnimationFrame(animate);
     };
+
     animate();
   }, []);
 
@@ -399,19 +650,58 @@ function App() {
       <div
         style={{
           position: "absolute",
+
           top: 20,
+
           right: 20,
+
           padding: "10px",
+
           background: "rgba(0,0,0,0.8)",
+
           color: "white",
+
           fontFamily: "monospace",
+
           borderRadius: "8px",
         }}
       >
-        <div>Pressure(MPa): {currentIntensity.toFixed(4)}</div>
+        <div>Raw Stress: {currentIntensity.toFixed(4)}</div>
+
         {/* Pass the Ref here! */}
-        <MiniGraph dataRef={graphDataRef} />
+
+        <MiniGraph
+          dataRef={graphDataRef}
+          minVal={CONFIG.APP.STRESS_GRAPH.MIN_VAL}
+          maxVal={CONFIG.APP.STRESS_GRAPH.MAX_VAL}
+        />
+
+        <div style={{ marginTop: "10px" }}>
+          Voltage (V): {currentVoltage.toFixed(6)}
+        </div>
+
+        <MiniGraph
+          dataRef={voltageGraphDataRef}
+          minVal={CONFIG.APP.VOLTAGE_GRAPH.MIN_VAL}
+          maxVal={CONFIG.APP.VOLTAGE_GRAPH.MAX_VAL}
+        />
       </div>
+      <StatsWidget
+        stats={[
+          { label: "Max Stress", value: maxStress, unit: "Pa" },
+          { label: "Max Voltage", value: maxVoltage, unit: "V" },
+          {
+            label: "Piezo Thickness",
+            value: CONFIG.PIEZO_THICKNESS,
+            unit: "m",
+          },
+          {
+            label: "Piezo V Constant",
+            value: CONFIG.PIEZO_VOLTAGE_CONSTANT,
+            unit: "Vm/N",
+          },
+        ]}
+      />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useEffect } from "react";
 
-export const MiniGraph = ({ dataRef }) => {
+export const MiniGraph = ({ dataRef, minVal = -15, maxVal = 15 }) => {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -12,6 +12,8 @@ export const MiniGraph = ({ dataRef }) => {
       const data = dataRef.current;
       const canvas = canvasRef.current;
       if (!canvas) return;
+
+      const ctx = canvas.getContext("2d"); // Ensure ctx is defined here if not in scope
 
       // Clear canvas
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -25,7 +27,20 @@ export const MiniGraph = ({ dataRef }) => {
         return;
       }
 
-      // Draw Line
+      const MIN_VAL = minVal;
+      const MAX_VAL = maxVal;
+      const RANGE = MAX_VAL - MIN_VAL;
+
+      // Draw center line (0 value)
+      ctx.beginPath();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.3)"; // Lighter color for guideline
+      ctx.lineWidth = 1;
+      const zeroY = (MAX_VAL - 0) / RANGE * canvas.height;
+      ctx.moveTo(0, zeroY);
+      ctx.lineTo(canvas.width, zeroY);
+      ctx.stroke();
+
+      // Draw Line for data
       ctx.beginPath();
       ctx.strokeStyle = "#00ff00";
       ctx.lineWidth = 2;
@@ -34,8 +49,8 @@ export const MiniGraph = ({ dataRef }) => {
 
       data.forEach((point, i) => {
         const x = i * step;
-        // Map intensity (0.0 to 1.5) to canvas height
-        const y = canvas.height - (point.value / 0.1) * canvas.height;
+        // Map point.value from [MIN_VAL, MAX_VAL] to canvas height [0, canvas.height]
+        const y = (MAX_VAL - point.value) / RANGE * canvas.height;
 
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);

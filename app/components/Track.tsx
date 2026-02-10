@@ -4,9 +4,13 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 
 export const trackUniforms = {
   uWheelPositions: { value: new Array(80).fill(new THREE.Vector3()) },
+
   uWheelCount: { value: 0 },
-  uLChar: { value: 4.0 }, // Characteristic length
-  uP: { value: 15.0 },     // Load force
+
+  uLChar: { value: 4.0 }, // Characteristic length (m)
+
+  uP: { value: 15.0 }, // Load force (N)
+
   uStressScale: { value: 0.15 }, // Scales the stress for visualization
 };
 
@@ -22,7 +26,7 @@ export const createTrackSegment = (
 ) => {
   const railHeight = 0.5;
   const trackWidth = 6;
-  
+
   // ... (physics bodies remain the same)
 
   // 1. Physics: Floor
@@ -76,7 +80,8 @@ export const createTrackSegment = (
       shader.uniforms.uP = trackUniforms.uP;
       shader.uniforms.uStressScale = trackUniforms.uStressScale;
 
-      shader.vertexShader = `
+      shader.vertexShader =
+        `
         varying vec3 vWorldPosition;
       ` + shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
@@ -87,7 +92,8 @@ export const createTrackSegment = (
         `,
       );
 
-      shader.fragmentShader = `
+      shader.fragmentShader =
+        `
         uniform vec3 uWheelPositions[80];
         uniform int uWheelCount;
         uniform float uLChar;       // Characteristic Length
@@ -157,33 +163,34 @@ export const createTrackSegment = (
         `,
       );
     };
-    
+
     // --- Sleeper Material (Advanced Heatmap) ---
     const sleeperMaterial = new THREE.MeshStandardMaterial({
       color: 0x555555, // Slightly lighter base color
     });
     sleeperMaterial.onBeforeCompile = (shader) => {
-        // Use all the same uniforms as the rail for consistency
-        shader.uniforms.uWheelPositions = trackUniforms.uWheelPositions;
-        shader.uniforms.uWheelCount = trackUniforms.uWheelCount;
-        shader.uniforms.uLChar = trackUniforms.uLChar;
-        shader.uniforms.uP = trackUniforms.uP;
-        shader.uniforms.uStressScale = trackUniforms.uStressScale;
-  
-        shader.vertexShader =
-          `
+      // Use all the same uniforms as the rail for consistency
+      shader.uniforms.uWheelPositions = trackUniforms.uWheelPositions;
+      shader.uniforms.uWheelCount = trackUniforms.uWheelCount;
+      shader.uniforms.uLChar = trackUniforms.uLChar;
+      shader.uniforms.uP = trackUniforms.uP;
+      shader.uniforms.uStressScale = trackUniforms.uStressScale;
+
+      shader.vertexShader =
+        `
           varying vec3 vWorldPosition;
         ` + shader.vertexShader;
-  
-        shader.vertexShader = shader.vertexShader.replace(
-          "#include <worldpos_vertex>",
-          `
+
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <worldpos_vertex>",
+        `
           #include <worldpos_vertex>
           vWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
           `,
-        );
+      );
 
-        shader.fragmentShader = `
+      shader.fragmentShader =
+        `
           uniform vec3 uWheelPositions[80];
           uniform int uWheelCount;
           uniform float uLChar;
@@ -200,10 +207,10 @@ export const createTrackSegment = (
               return -0.25 * force * l * exponent * bracket;
           }
         ` + shader.fragmentShader;
-  
-        shader.fragmentShader = shader.fragmentShader.replace(
-          "#include <color_fragment>",
-          `
+
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "#include <color_fragment>",
+        `
           #include <color_fragment>
           
           // --- Corrected "Projection" Model ---
@@ -222,37 +229,55 @@ export const createTrackSegment = (
                 }
               }
           }
-          // The base stress is the dominant downward force from either rail.
-          float baseStressX = max(0.0, max(stressLeft, stressRight));
+          // The base stress is the one with the largest magnitude (compression or relief).
+          float baseStressX = abs(stressLeft) > abs(stressRight) ? stressLeft : stressRight;
 
           // 2. Interpolate that single base value ONLY along the Z-axis
           float railZPosition = 3.0; // Half of trackWidth
           float distToNearestRail = min(abs(vWorldPosition.z - railZPosition), abs(vWorldPosition.z + railZPosition));
-          float zFalloff = 1.0 - smoothstep(0.0, 2.5, distToNearestRail);
+          
+          float falloffSpread;
+          // If the pixel is between the Z=0 axis and the rail's centerline, spread the falloff more
+          if (abs(vWorldPosition.z) < railZPosition) {
+            falloffSpread = 6.0;
+          } else {
+            falloffSpread = 4.0;
+          }
 
-          // 3. Final intensity is the base stress modulated by the Z-falloff
-          float finalIntensity = baseStressX * 0.6 * zFalloff * uStressScale * 1.5;
+          float zFalloff = 1.0 - smoothstep(0.0, falloffSpread, distToNearestRail);
 
-          // Use the same multi-color heatmap as the rails
+          // 3. Modulate the base stress by the falloff
+          float modulatedStress = baseStressX * zFalloff;
+
           vec3 heatColor;
-          vec3 color1 = vec3(0.0, 0.0, 0.5); // Deep Blue
-          vec3 color2 = vec3(0.0, 1.0, 1.0); // Cyan
-          vec3 color3 = vec3(0.0, 1.0, 0.0); // Green
-          vec3 color4 = vec3(1.0, 1.0, 0.0); // Yellow
-          vec3 color5 = vec3(1.0, 0.0, 0.0); // Red
-          vec3 color6 = vec3(0.4, 0.1, 0.0); // Brownish Red
 
-          if (finalIntensity < 0.15) heatColor = mix(color1, color2, finalIntensity / 0.15);
-          else if (finalIntensity < 0.3) heatColor = mix(color2, color3, (finalIntensity - 0.15) / 0.15);
-          else if (finalIntensity < 0.45) heatColor = mix(color3, color4, (finalIntensity - 0.3) / 0.15);
-          else if (finalIntensity < 0.6) heatColor = mix(color4, color5, (finalIntensity - 0.45) / 0.15);
-          else if (finalIntensity < 0.8) heatColor = mix(color5, color6, (finalIntensity - 0.6) / 0.2);
-          else heatColor = mix(color6, color6, clamp((finalIntensity - 0.8) / 0.7, 0.0, 1.0));
+          if (modulatedStress < 0.0) {
+              // Negative stress (relief) is visualized as blue, mimicking the rail shader
+              float reliefIntensity = abs(modulatedStress) * uStressScale * 2.0; // Amplify relief visibility
+              heatColor = mix(vec3(0.05), vec3(0.0, 0.5, 1.0), clamp(reliefIntensity, 0.0, 1.0));
+          } else {
+              // Positive stress (compression) uses the multi-color heatmap
+              float finalIntensity = modulatedStress * 0.6 * zFalloff * uStressScale * 1.5;
+
+              vec3 color1 = vec3(0.0, 0.0, 0.5); // Deep Blue
+              vec3 color2 = vec3(0.0, 1.0, 1.0); // Cyan
+              vec3 color3 = vec3(0.0, 1.0, 0.0); // Green
+              vec3 color4 = vec3(1.0, 1.0, 0.0); // Yellow
+              vec3 color5 = vec3(1.0, 0.0, 0.0); // Red
+              vec3 color6 = vec3(0.4, 0.1, 0.0); // Brownish Red
+
+              if (finalIntensity < 0.15) heatColor = mix(color1, color2, finalIntensity / 0.15);
+              else if (finalIntensity < 0.3) heatColor = mix(color2, color3, (finalIntensity - 0.15) / 0.15);
+              else if (finalIntensity < 0.45) heatColor = mix(color3, color4, (finalIntensity - 0.3) / 0.15);
+              else if (finalIntensity < 0.6) heatColor = mix(color4, color5, (finalIntensity - 0.45) / 0.15);
+              else if (finalIntensity < 0.8) heatColor = mix(color5, color6, (finalIntensity - 0.6) / 0.2);
+              else heatColor = mix(color6, color6, clamp((finalIntensity - 0.8) / 0.7, 0.0, 1.0));
+          }
 
           diffuseColor.rgb = mix(diffuseColor.rgb, heatColor, 0.9);
           `,
-        );
-      };
+      );
+    };
 
     // Apply materials
     railModel.traverse((child) => {
@@ -264,13 +289,13 @@ export const createTrackSegment = (
       }
     });
     sleepersModel.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          child.name = "sleeper";
-          child.material = sleeperMaterial;
-          child.castShadow = true;
-          child.receiveShadow = true;
-        }
-      });
+      if ((child as THREE.Mesh).isMesh) {
+        child.name = "sleeper";
+        child.material = sleeperMaterial;
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
 
     // Combine into a single group for cloning, and rotate it
     const trackSegment = new THREE.Group();
@@ -286,9 +311,13 @@ export const createTrackSegment = (
 
     for (let i = 0; i < numberOfPieces; i++) {
       const trackClone = trackSegment.clone();
-      
+
       const startX = x - length / 2 + pieceLength / 2;
-      trackClone.position.set(startX + i * pieceLength, y + trackVisualYOffset, z);
+      trackClone.position.set(
+        startX + i * pieceLength,
+        y + trackVisualYOffset,
+        z,
+      );
       trackClone.rotation.y += Math.PI / 2; // Apply additional 90-degree rotation
 
       scene.add(trackClone);
