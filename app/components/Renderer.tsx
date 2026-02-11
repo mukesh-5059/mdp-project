@@ -14,15 +14,13 @@ import { StatsWidget } from "./StatsWidget";
 
 const CONFIG = {
   PIEZO_THICKNESS: 0.1, // Unified thickness value (5mm)
-  PIEZO_VOLTAGE_CONSTANT: 0.025, // Vm/N or Vm/Pa
+  PIEZO_VOLTAGE_CONSTANT: 0.02, // Vm/N or Vm/Pa
+  PIEZO_CAPACITANCE: 0,
 
   // Constants for capacitance calculation
   PIEZO_EPSILON_R: 1300,
   PIEZO_EPSILON_0: 8.854e-12, // Vacuum permittivity
   PIEZO_AREA: 0.01, // 10cm x 10cm = 0.01 m^2
-
-  // Calculated Capacitance
-  PIEZO_CAPACITANCE: (1300 * 8.854e-12 * 0.01) / 0.005, // (epsilonR * epsilon0 * area) / PIEZO_THICKNESS (which is 0.005)
 
   HEAT_INFO: {
     Z_AXIS_DISTANCE_CHECK: 2.0,
@@ -81,12 +79,12 @@ const CONFIG = {
       MAX_VAL: 1500.0,
     },
     CURRENT_GRAPH: {
-      MIN_VAL: -0.001,
-      MAX_VAL: 0.001,
-    },
-    POWER_GRAPH: {
       MIN_VAL: -0.1,
       MAX_VAL: 0.1,
+    },
+    POWER_GRAPH: {
+      MIN_VAL: -10,
+      MAX_VAL: 10,
     },
     L_CHAR: 13,
     P: 125000.0,
@@ -94,7 +92,15 @@ const CONFIG = {
     SLEEPER_FALLOFF_SPREAD_INNER: 6.0,
     SLEEPER_FALLOFF_SPREAD_OUTER: 4.0,
   },
+  // Artificial multipliers for tuning
+  ARTIFICIAL_CAPACITANCE_MULTIPLIER: 25, // Multiplies calculated C to ~100nF
+  ARTIFICIAL_CURRENT_MULTIPLIER: 25,
 };
+
+CONFIG.PIEZO_CAPACITANCE =
+  ((CONFIG.PIEZO_EPSILON_R * CONFIG.PIEZO_EPSILON_0 * CONFIG.PIEZO_AREA) /
+    CONFIG.PIEZO_THICKNESS) *
+  CONFIG.ARTIFICIAL_CAPACITANCE_MULTIPLIER;
 
 // A JS implementation of the GLSL bending stress formula
 function getBendingStress(dist, l, force) {
@@ -638,7 +644,12 @@ function App() {
           lastTimeRef.current > 0 ? currentTime - lastTimeRef.current : 0;
         const dV = piezoVoltage - previousVoltageRef.current;
 
-        const piezoCurrent = dt > 0 ? CONFIG.PIEZO_CAPACITANCE * (dV / dt) : 0;
+        const piezoCurrent =
+          dt > 0
+            ? CONFIG.PIEZO_CAPACITANCE *
+              (dV / dt) *
+              CONFIG.ARTIFICIAL_CURRENT_MULTIPLIER
+            : 0;
         const piezoPower = piezoVoltage * piezoCurrent;
 
         // Accumulate energy (Joules = Watts * seconds)
