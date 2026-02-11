@@ -13,8 +13,17 @@ import { MiniGraph } from "./MiniGraph";
 import { StatsWidget } from "./StatsWidget";
 
 const CONFIG = {
-  PIEZO_THICKNESS: 1e-1,
-  PIEZO_VOLTAGE_CONSTANT: 0.02, // Vm/N or Vm/Pa
+  PIEZO_THICKNESS: 0.1, // Unified thickness value (5mm)
+  PIEZO_VOLTAGE_CONSTANT: 0.025, // Vm/N or Vm/Pa
+
+  // Constants for capacitance calculation
+  PIEZO_EPSILON_R: 1300,
+  PIEZO_EPSILON_0: 8.854e-12, // Vacuum permittivity
+  PIEZO_AREA: 0.01, // 10cm x 10cm = 0.01 m^2
+
+  // Calculated Capacitance
+  PIEZO_CAPACITANCE: (1300 * 8.854e-12 * 0.01) / 0.005, // (epsilonR * epsilon0 * area) / PIEZO_THICKNESS (which is 0.005)
+
   HEAT_INFO: {
     Z_AXIS_DISTANCE_CHECK: 2.0,
     X_AXIS_DISTANCE_CHECK: 50.0,
@@ -58,7 +67,7 @@ const CONFIG = {
     WHEEL_MODEL_SCALE: 50,
     PIVOT_OFFSET: 13.5,
     INSPECTOR_SPHERE_SIZE: 0.2,
-    MAX_SPEED: 900,
+    MAX_SPEED: 1500,
     LIGHT_POSITION_OFFSET: new THREE.Vector3(20, 40, 40),
     UNUSED_POINTS_Y_POSITION: -1000,
     GRAPH_UPDATE_FREQUENCY: 5, // every 5 frames
@@ -68,8 +77,16 @@ const CONFIG = {
       MAX_VAL: 900000,
     },
     VOLTAGE_GRAPH: {
-      MIN_VAL: -1000.0,
-      MAX_VAL: 1000.0,
+      MIN_VAL: -1500.0,
+      MAX_VAL: 1500.0,
+    },
+    CURRENT_GRAPH: {
+      MIN_VAL: -0.001,
+      MAX_VAL: 0.001,
+    },
+    POWER_GRAPH: {
+      MIN_VAL: -0.1,
+      MAX_VAL: 0.1,
     },
     L_CHAR: 13,
     P: 125000.0,
@@ -253,14 +270,26 @@ function getSleeperColor(rawStress, stressScale) {
 function App() {
   const [currentIntensity, setCurrentIntensity] = useState(0);
   const [currentVoltage, setCurrentVoltage] = useState(0);
+  const [currentCurrent, setCurrentCurrent] = useState(0);
+  const [currentPower, setCurrentPower] = useState(0);
   const [maxStress, setMaxStress] = useState(0);
   const [maxVoltage, setMaxVoltage] = useState(0);
+  const [maxCurrent, setMaxCurrent] = useState(0);
+  const [maxPower, setMaxPower] = useState(0);
+  const [cumulativeEnergy, setCumulativeEnergy] = useState(0);
 
   const inspectorTargetType = useRef(null);
+
+  const cumulativeEnergyRef = useRef(0);
 
   const graphDataRef = useRef([]);
 
   const voltageGraphDataRef = useRef([]);
+  const currentGraphDataRef = useRef([]);
+  const powerGraphDataRef = useRef([]);
+
+  const previousVoltageRef = useRef(0);
+  const lastTimeRef = useRef(0);
 
   useEffect(() => {
     const test = new SceneInit("myThreeJsCanvas");
@@ -418,6 +447,12 @@ function App() {
         inspectorSphere.visible = true;
         setMaxStress(0);
         setMaxVoltage(0);
+        setMaxCurrent(0);
+        setMaxPower(0);
+        setCumulativeEnergy(0);
+        cumulativeEnergyRef.current = 0;
+        previousVoltageRef.current = 0;
+        lastTimeRef.current = 0;
       }
     });
 
@@ -560,8 +595,7 @@ function App() {
 
       if (inspectorSphere.visible) {
         // Re-calculate intensity every frame with the new, accurate logic
-
-        const { a, pressureMPa, piezoVoltage } = getHeatInfo(
+        const { pressureMPa, piezoVoltage } = getHeatInfo(
           inspectorSphere.position,
           trackUniforms.uWheelPositions.value,
           trackUniforms.uWheelCount.value,
@@ -571,7 +605,7 @@ function App() {
           trackUniforms.uStressScale.value,
         );
 
-        const { rawStress, b, c } = getHeatInfo(
+        const { rawStress } = getHeatInfo(
           inspectorSphere.position,
           trackUniforms.uWheelPositions.value,
           trackUniforms.uWheelCount.value,
@@ -582,58 +616,80 @@ function App() {
         );
 
         let finalColor;
-
         if (inspectorTargetType.current === "rail") {
           finalColor = getRailColor(
             rawStress,
-
             trackUniforms.uStressScale.value,
           );
         } else {
           finalColor = getSleeperColor(
             rawStress,
-
             trackUniforms.uStressScale.value,
           );
         }
 
         // Update visuals
-
         inspectorSphere.material.color.copy(finalColor);
-
         inspectorSphere.renderOrder = 999;
 
+        // --- New: Calculate Current and Power ---
+        const currentTime = performance.now() / 1000; // time in seconds
+        const dt =
+          lastTimeRef.current > 0 ? currentTime - lastTimeRef.current : 0;
+        const dV = piezoVoltage - previousVoltageRef.current;
+
+        const piezoCurrent = dt > 0 ? CONFIG.PIEZO_CAPACITANCE * (dV / dt) : 0;
+        const piezoPower = piezoVoltage * piezoCurrent;
+
+        // Accumulate energy (Joules = Watts * seconds)
+        if (dt > 0) {
+          const energySlice = Math.abs(piezoPower * dt);
+          cumulativeEnergyRef.current += energySlice;
+        }
+
+        // Update refs for next frame's calculation
+        previousVoltageRef.current = piezoVoltage;
+        lastTimeRef.current = currentTime;
+
         if (frameCount % CONFIG.APP.GRAPH_UPDATE_FREQUENCY === 0) {
+          setCumulativeEnergy(cumulativeEnergyRef.current);
           setCurrentIntensity(pressureMPa); // Use pressure for display
           setCurrentVoltage(piezoVoltage);
+          setCurrentCurrent(piezoCurrent);
+          setCurrentPower(piezoPower);
+
           setMaxStress((prevMax) => Math.max(prevMax, pressureMPa));
           setMaxVoltage((prevMax) => Math.max(prevMax, Math.abs(piezoVoltage)));
+          setMaxCurrent((prevMax) => Math.max(prevMax, Math.abs(piezoCurrent)));
+          setMaxPower((prevMax) => Math.max(prevMax, Math.abs(piezoPower)));
 
           // Add to graph data
-
-          graphDataRef.current.push({
-            time: Date.now(),
-
-            value: pressureMPa,
-          });
-
+          graphDataRef.current.push({ time: Date.now(), value: pressureMPa });
           voltageGraphDataRef.current.push({
             time: Date.now(),
-
             value: piezoVoltage,
           });
+          currentGraphDataRef.current.push({
+            time: Date.now(),
+            value: piezoCurrent,
+          });
+          powerGraphDataRef.current.push({
+            time: Date.now(),
+            value: piezoPower,
+          });
 
-          // Keep only the last 100 points
-
-          if (graphDataRef.current.length > CONFIG.APP.GRAPH_DATA_POINTS) {
-            graphDataRef.current.shift();
-          }
-
-          if (
-            voltageGraphDataRef.current.length > CONFIG.APP.GRAPH_DATA_POINTS
-          ) {
-            voltageGraphDataRef.current.shift();
-          }
+          // Keep only the last N points
+          const refsToTrim = [
+            graphDataRef,
+            voltageGraphDataRef,
+            currentGraphDataRef,
+            powerGraphDataRef,
+          ];
+          refsToTrim.forEach((ref) => {
+            if (ref.current.length > CONFIG.APP.GRAPH_DATA_POINTS) {
+              ref.current.shift();
+            }
+          });
         }
       }
 
@@ -653,7 +709,7 @@ function App() {
 
           top: 20,
 
-          right: 20,
+          left: 20,
 
           padding: "10px",
 
@@ -685,11 +741,31 @@ function App() {
           minVal={CONFIG.APP.VOLTAGE_GRAPH.MIN_VAL}
           maxVal={CONFIG.APP.VOLTAGE_GRAPH.MAX_VAL}
         />
+        <div style={{ marginTop: "10px" }}>
+          Current (A): {currentCurrent.toExponential(4)}
+        </div>
+        <MiniGraph
+          dataRef={currentGraphDataRef}
+          minVal={CONFIG.APP.CURRENT_GRAPH.MIN_VAL}
+          maxVal={CONFIG.APP.CURRENT_GRAPH.MAX_VAL}
+        />
+
+        <div style={{ marginTop: "10px" }}>
+          Power (W): {currentPower.toExponential(4)}
+        </div>
+        <MiniGraph
+          dataRef={powerGraphDataRef}
+          minVal={CONFIG.APP.POWER_GRAPH.MIN_VAL}
+          maxVal={CONFIG.APP.POWER_GRAPH.MAX_VAL}
+        />
       </div>
       <StatsWidget
         stats={[
           { label: "Max Stress", value: maxStress, unit: "Pa" },
           { label: "Max Voltage", value: maxVoltage, unit: "V" },
+          { label: "Max Current", value: maxCurrent, unit: "A" },
+          { label: "Max Power", value: maxPower, unit: "W" },
+          { label: "Cumulative Energy", value: cumulativeEnergy, unit: "J" },
           {
             label: "Piezo Thickness",
             value: CONFIG.PIEZO_THICKNESS,
@@ -699,6 +775,30 @@ function App() {
             label: "Piezo V Constant",
             value: CONFIG.PIEZO_VOLTAGE_CONSTANT,
             unit: "Vm/N",
+          },
+          {
+            label: "Piezo Capacitance",
+            value: CONFIG.PIEZO_CAPACITANCE,
+            unit: "F",
+            format: "exponential",
+            precision: 3,
+          },
+          {
+            label: "Piezo Epsilon R",
+            value: CONFIG.PIEZO_EPSILON_R,
+            unit: "",
+          },
+          {
+            label: "Piezo Epsilon 0",
+            value: CONFIG.PIEZO_EPSILON_0,
+            unit: "F/m",
+            format: "exponential",
+            precision: 3,
+          },
+          {
+            label: "Piezo Area",
+            value: CONFIG.PIEZO_AREA,
+            unit: "m²",
           },
         ]}
       />

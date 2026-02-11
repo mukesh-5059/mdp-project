@@ -4,6 +4,10 @@ interface Stat {
   label: string;
   value: number;
   unit?: string;
+  // Optional formatting: 'fixed' (toFixed), 'exponential' (toExponential), 'auto' (toPrecision)
+  format?: 'fixed' | 'exponential' | 'auto';
+  // Number of digits for formatting (decimal places for fixed/exponential, significant digits for auto)
+  precision?: number;
 }
 
 interface StatsWidgetProps {
@@ -11,6 +15,20 @@ interface StatsWidgetProps {
 }
 
 export const StatsWidget: React.FC<StatsWidgetProps> = ({ stats }) => {
+  const formatValue = (stat: Stat) => {
+    const p = stat.precision !== undefined ? stat.precision : 4; // Default precision to 4
+
+    switch (stat.format) {
+      case 'exponential':
+        return stat.value.toExponential(p);
+      case 'fixed':
+        return stat.value.toFixed(p);
+      case 'auto':
+      default: // Default to auto (toPrecision) if format is not specified or unrecognized
+        return stat.value.toPrecision(p);
+    }
+  };
+
   return (
     <div
       style={{
@@ -28,7 +46,7 @@ export const StatsWidget: React.FC<StatsWidgetProps> = ({ stats }) => {
       {stats.map((stat, index) => (
         <div key={index} style={{ marginBottom: index < stats.length - 1 ? '10px' : '0' }}>
           <div>{stat.label}:</div>
-          <div>{stat.value.toFixed(4)} {stat.unit || ''}</div>
+          <div>{formatValue(stat)} {stat.unit || ''}</div>
         </div>
       ))}
     </div>
